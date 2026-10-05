@@ -99,9 +99,15 @@ export default function PondList() {
         <StatBadge label="蒸发池总数" value={store.state.ponds.length} suffix="口" tone="primary" />
         <StatBadge
           label="在用池"
-          value={store.state.ponds.filter((pond) => pond.status === '在用').length}
+          value={store.state.ponds.filter((pond) => store.effectiveStatus(pond) === '在用').length}
           suffix="口"
           tone="success"
+        />
+        <StatBadge
+          label="清池中"
+          value={store.state.ponds.filter((pond) => store.effectiveStatus(pond) === '清池中').length}
+          suffix="口"
+          tone="danger"
         />
         <StatBadge label="钠盐池" value={stageDistribution()['钠盐']} suffix="口" tone="info" />
         <StatBadge label="钾盐池" value={stageDistribution()['钾盐']} suffix="口" tone="warning" />
@@ -171,8 +177,30 @@ export default function PondList() {
                         <p class="text-sm font-semibold text-slate-800">{pond.code}</p>
                         <p class="text-xs text-slate-500">{pond.seriesName}</p>
                       </div>
-                      <StageTag stage={pond.stage} status={pond.status} size="sm" />
+                      <StageTag stage={pond.stage} status={store.effectiveStatus(pond)} size="sm" />
                     </div>
+                    {(() => {
+                      const order = store.activeCleaningOrder(pond.id);
+                      const pending = store.pendingCleaningOrder(pond.id);
+                      return (
+                        <Show when={order ?? pending}>
+                          {(o) => (
+                            <p
+                              class={`rounded border px-2 py-1 text-[11px] leading-relaxed ${
+                                order !== undefined
+                                  ? 'border-rose-200 bg-rose-50 text-rose-700'
+                                  : 'border-amber-200 bg-amber-50 text-amber-700'
+                              }`}
+                            >
+                              {order !== undefined ? '清池中' : '待进场'}：{o().enterDate}
+                              {' → '}
+                              {o().exitDate === '' ? '退场未定' : o().exitDate} · 清完水深 {o().remainDepthCm} cm
+                              {o().backfilled ? '（升级回填）' : ''}
+                            </p>
+                          )}
+                        </Show>
+                      );
+                    })()}
                     <dl class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-600">
                       <div>
                         <dt class="text-slate-400">面积</dt>

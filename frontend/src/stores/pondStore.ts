@@ -10,9 +10,10 @@ import type { Gate } from '../types/gate';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
 import type { Schedule } from '../types/schedule';
+import type { CleaningOrder } from '../types/cleaning';
 import { DB_SCHEMA_VERSION, ROW_REVISION, countAll, db, initDatabase, putPond, removePond } from '../utils/db';
 import { effectiveVerdict, pondVolumeM3 } from '../utils/brine';
-import { nowIso, uuid } from '../utils/id';
+import { nowIso, today, uuid } from '../utils/id';
 
 /** 单口池的派生统计，供 /ponds、/gates、/export 复用 */
 export interface PondStat {
@@ -37,6 +38,8 @@ export interface PondStat {
   dischargeReady: boolean;
   /** 走水计划条数 */
   scheduleCount: number;
+  /** 当前是否清池中（以有效清池单为准） */
+  cleaning: boolean;
 }
 
 interface PondState {
@@ -45,6 +48,7 @@ interface PondState {
   observations: Observation[];
   assays: Assay[];
   schedules: Schedule[];
+  cleaningOrders: CleaningOrder[];
   currentSeries: string | null;
   loading: boolean;
   ready: boolean;
@@ -78,6 +82,7 @@ function createPondStore() {
     observations: [],
     assays: [],
     schedules: [],
+    cleaningOrders: [],
     currentSeries: readSeries(),
     loading: true,
     ready: false,
@@ -100,16 +105,17 @@ function createPondStore() {
       if (!subscribed) {
         subscribed = true;
         liveQuery(async () => {
-          const [ponds, gates, observations, assays, schedules] = await Promise.all([
+          const [ponds, gates, observations, assays, schedules, cleaningOrders] = await Promise.all([
             db.ponds.toArray(),
             db.gates.toArray(),
             db.observations.toArray(),
             db.assays.toArray(),
             db.schedules.toArray(),
+            db.cleaningOrders.toArray(),
           ]);
-          return { ponds, gates, observations, assays, schedules };
+          return { ponds, gates, observations, assays, schedules, cleaningOrders };
         }).subscribe({
-          next: ({ ponds, gates, observations, assays, schedules }) => {
+          next: ({ ponds, gates, observations, assays, schedules, cleaningOrders }) => {
             const sorted = [...ponds].sort(
               (a, b) => a.seriesName.localeCompare(b.seriesName, 'zh-Hans-CN') || a.code.localeCompare(b.code),
             );
@@ -119,6 +125,7 @@ function createPondStore() {
               observations: [...observations].sort((a, b) => a.date.localeCompare(b.date)),
               assays: [...assays].sort((a, b) => a.date.localeCompare(b.date)),
               schedules: [...schedules].sort((a, b) => a.orderIndex - b.orderIndex),
+              cleaningOrders: [...cleaningOrders].sort((a, b) => b.enterDate.localeCompare(a.enterDate)),
               loading: false,
               ready: true,
               error: '',
@@ -168,6 +175,7 @@ function createPondStore() {
         lastVerdict: verdict,
         dischargeReady: verdict === '达标',
         scheduleCount: state.schedules.filter((row) => row.pondId === pond.id).length,
+        cleaning: state.cleaningOrders.some((o) => o.pondId === pond.id && o.state === '清池中'),
       };
     });
     return result;
@@ -187,6 +195,7 @@ function createPondStore() {
         lastVerdict: '—',
         dischargeReady: false,
         scheduleCount: 0,
+        cleaning: false,
       }
     );
   }
@@ -194,6 +203,26 @@ function createPondStore() {
   function setCurrentSeries(series: string | null): void {
     setState('currentSeries', series);
     writeSeries(series);
+  }
+
+  /** 该池当前挂着的有效清池单（单据状态=清池中，即进场到退场期间） */
+  function activeCleaningOrder(pondId: string): CleaningOrder | undefined {
+    return state.cleaningOrders.find((o) => o.pondId === pondId && o.state === '清池中');
+  }
+
+  /** 该池已开单但还没到进场日（待进场提示，台账仍按有效单据记清池中） */
+  function pendingCleaningOrder(pondId: string): CleaningOrder | undefined {
+    return state.cleaningOrders.find(
+      (o) => o.pondId === pondId && o.state === '清池中' && o.enterDate > today(),
+    );
+  }
+
+  /**
+   * 有效运行状态：以清池单为准（两边按池号对账），台账状态只在无有效单据时生效。
+   */
+  function effectiveStatus(pond: Pond): Pond['status'] {
+    if (activeCleaningOrder(pond.id) !== undefined) return '清池中';
+    return pond.status;
   }
 
   function patchFilters(patch: Partial<{ keyword: string; stage: PondStage | 'all' }>): void {
@@ -301,6 +330,9 @@ function createPondStore() {
     updatePond,
     deletePond,
     refreshCounts,
+    activeCleaningOrder,
+    pendingCleaningOrder,
+    effectiveStatus,
   };
 }
 

@@ -38,6 +38,9 @@ export default function ExportView() {
       assays: assays.length,
       gates: store.state.gates.length,
       schedules: schedules.length,
+      cleaning: store.state.cleaningOrders.length,
+      cleaningActive: store.state.cleaningOrders.filter((o) => o.state === '清池中').length,
+      queued: schedules.filter((row) => row.queued === true).length,
       passCount,
       passPct: assays.length === 0 ? 0 : Math.round((passCount / assays.length) * 1000) / 10,
       donePct: schedules.length === 0 ? 0 : Math.round((done / schedules.length) * 1000) / 10,
@@ -57,6 +60,7 @@ export default function ExportView() {
       store.state.observations,
       store.state.assays,
       store.state.schedules,
+      store.state.cleaningOrders,
     );
     setMessage(`已导出晒程进度汇总 ${filename}`);
   };
@@ -67,6 +71,7 @@ export default function ExportView() {
       store.state.observations,
       store.state.assays,
       store.state.schedules,
+      store.state.cleaningOrders,
     );
     const ok = await copyText(text);
     setMessage(ok ? '晒程调度通报已复制到剪贴板' : '当前浏览器不支持剪贴板写入，请手动复制');
@@ -106,14 +111,17 @@ export default function ExportView() {
           tone="success"
           hint="区间内判定为「达标」的化验记录占比"
         />
-        <StatBadge label="出卤候选池" value={summary().readyPonds} suffix="口" tone="success" />
+        <StatBadge label="出湖候选池" value={summary().readyPonds} suffix="口" tone="success" />
+        <StatBadge label="清池单" value={summary().cleaning} suffix="单" tone="info" />
+        <StatBadge label="清池中" value={summary().cleaningActive} suffix="口" tone="danger" />
+        <StatBadge label="走水排队待排" value={summary().queued} suffix="条" tone="warning" />
         <StatBadge label="出卤完成率" value={`${summary().donePct}%`} percent={summary().donePct} tone="primary" />
         <StatBadge
           label="数据结构版本"
           value={`v${DB_SCHEMA_VERSION}`}
           suffix={`· ${DB_NAME}`}
           tone="default"
-          hint="IndexedDB 库名与结构版本；v1 建表与 pondId+date 复合索引，v2 新增 evapMm 并迁移旧记录"
+          hint="IndexedDB 库名与结构版本；v1 建表与复合索引，v2 新增 evapMm，v3 接入清池班（cleaningOrders + 旧数据按池状态回填）"
         />
       </div>
 
@@ -231,7 +239,7 @@ export default function ExportView() {
           <div class="w-full max-w-lg rounded-xl bg-white shadow-2xl">
             <div class="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-800">确认重置本地数据？</div>
             <div class="px-4 py-4 text-sm leading-relaxed text-slate-600">
-              全部蒸发池、闸门串级、卤水日观测、离子组分分析与走水编排都会被清空，并重新灌入演示数据。
+              全部蒸发池、闸门串级、卤水日观测、离子组分分析、走水编排与清池单都会被清空，并重新灌入演示数据。
             </div>
             <div class="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
               <button class={BTN_GHOST} onClick={() => setResetOpen(false)}>

@@ -8,6 +8,7 @@ import type { Pond } from '../types/pond';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
 import type { Schedule } from '../types/schedule';
+import type { CleaningOrder } from '../types/cleaning';
 import { effectiveVerdict, pondVolumeM3, round1 } from './brine';
 import { stampSuffix } from './id';
 
@@ -71,11 +72,20 @@ export function parseSnapshot(text: string): SnapshotParseResult {
       return { ok: false, message: `存档缺少 ${String(key)} 数组。`, snapshot: null };
     }
   }
-  return { ok: true, message: '存档校验通过。', snapshot: data as DatabaseSnapshot };
+  // 清池单为 v3 新增：旧版（v1/v2）存档没有该数组，导入侧会按空数组兜底
+  const snapshot = data as DatabaseSnapshot;
+  if (!Array.isArray(snapshot.cleaningOrders)) snapshot.cleaningOrders = [];
+  return { ok: true, message: '存档校验通过。', snapshot };
 }
 
 /** 生成晒程进度汇总 CSV */
-export function buildProgressCsv(ponds: Pond[], observations: Observation[], assays: Assay[], schedules: Schedule[]): string {
+export function buildProgressCsv(
+  ponds: Pond[],
+  observations: Observation[],
+  assays: Assay[],
+  schedules: Schedule[],
+  cleaningOrders: CleaningOrder[] = [],
+): string {
   const header = [
     '池号',
     '池系',
@@ -92,6 +102,8 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
     '最近判定',
     '走水计划数',
     '已完成出卤数',
+    '清池中计划挪入/排队',
+    '清池窗口',
   ];
   const lines: string[] = [header.map(csvCell).join(',')];
   ponds.forEach((pond) => {
@@ -100,6 +112,15 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
     const pondAssays = assays.filter((row) => row.pondId === pond.id).sort((a, b) => a.date.localeCompare(b.date));
     const latestAssay = pondAssays.length > 0 ? pondAssays[pondAssays.length - 1] : null;
     const pondSchedules = schedules.filter((row) => row.pondId === pond.id);
+    const activeOrder = cleaningOrders.find((order) => order.pondId === pond.id && order.state === '清池中');
+    const orderSchedules =
+      activeOrder === undefined ? [] : schedules.filter((row) => row.cleaningOrderId === activeOrder.id);
+    const movedCount = orderSchedules.filter((row) => row.queued !== true && row.pondId !== pond.id).length;
+    const queuedCount = orderSchedules.filter((row) => row.queued === true).length;
+    const cleaningWindow =
+      activeOrder === undefined
+        ? '—'
+        : `${activeOrder.enterDate}~${activeOrder.exitDate === '' ? '未定' : activeOrder.exitDate}`;
     lines.push(
       [
         pond.code,
@@ -117,6 +138,8 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
         latestAssay === null ? '—' : effectiveVerdict(latestAssay),
         pondSchedules.length,
         pondSchedules.filter((row) => row.state === '已出卤').length,
+        activeOrder === undefined ? '—' : `挪${movedCount}/排${queuedCount}`,
+        cleaningWindow,
       ]
         .map(csvCell)
         .join(','),
@@ -131,9 +154,10 @@ export function exportProgressCsvFile(
   observations: Observation[],
   assays: Assay[],
   schedules: Schedule[],
+  cleaningOrders: CleaningOrder[] = [],
 ): string {
   const filename = `盐湖晒程进度汇总-${stampSuffix()}.csv`;
-  download(filename, buildProgressCsv(ponds, observations, assays, schedules), 'text/csv;charset=utf-8');
+  download(filename, buildProgressCsv(ponds, observations, assays, schedules, cleaningOrders), 'text/csv;charset=utf-8');
   return filename;
 }
 
@@ -151,7 +175,13 @@ export async function copyText(text: string): Promise<boolean> {
 }
 
 /** 生成晒程调度通报纯文本 */
-export function buildBriefingText(ponds: Pond[], observations: Observation[], assays: Assay[], schedules: Schedule[]): string {
+export function buildBriefingText(
+  ponds: Pond[],
+  observations: Observation[],
+  assays: Assay[],
+  schedules: Schedule[],
+  cleaningOrders: CleaningOrder[] = [],
+): string {
   const lines: string[] = [`【盐湖晒程调度通报】共 ${ponds.length} 口蒸发池`];
   ponds.forEach((pond) => {
     const pondObs = observations.filter((row) => row.pondId === pond.id).sort((a, b) => a.date.localeCompare(b.date));
@@ -159,12 +189,20 @@ export function buildBriefingText(ponds: Pond[], observations: Observation[], as
     const pondAssays = assays.filter((row) => row.pondId === pond.id).sort((a, b) => a.date.localeCompare(b.date));
     const lastAssay = pondAssays.length > 0 ? pondAssays[pondAssays.length - 1] : null;
     const pending = schedules.filter((row) => row.pondId === pond.id && row.state !== '已出卤').length;
+    const order = cleaningOrders.find((o) => o.pondId === pond.id && o.state === '清池中');
+    const queued = schedules.filter((row) => row.cleaningOrderId === order?.id && row.queued === true);
+    const short = Math.round(queued.reduce((acc, row) => acc + (row.shortM3 ?? 0), 0) * 10) / 10;
+    const cleaningText =
+      order === undefined
+        ? ''
+        : `，清池中（${order.enterDate}~${order.exitDate === '' ? '未定' : order.exitDate}）` +
+          (queued.length > 0 ? `，走水排队 ${queued.length} 条缺 ${short} m³` : '');
     lines.push(
       `· ${pond.code}（${pond.seriesName} / ${pond.stage} / ${pond.status}）最近密度 ${
         latest === null ? '无观测' : `${latest.densityGcm3} g/cm³（${latest.date}）`
       }，蒸发量 ${latest === null ? '—' : `${round1(latest.evapMm)} mm/d`}，组分判定 ${
         lastAssay === null ? '未化验' : effectiveVerdict(lastAssay)
-      }，待完成走水 ${pending} 条`,
+      }，待完成走水 ${pending} 条${cleaningText}`,
     );
   });
   return lines.join('\n');

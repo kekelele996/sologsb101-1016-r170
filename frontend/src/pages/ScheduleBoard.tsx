@@ -5,6 +5,7 @@
  */
 import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
+import { useNavigate } from '@solidjs/router';
 import AppDialog from '../components/common/AppDialog';
 import EmptyPanel from '../components/common/EmptyPanel';
 import FilterBar from '../components/common/FilterBar';
@@ -46,6 +47,7 @@ function emptyDraft(pondId: string, orderIndex: number): ScheduleDraft {
 export default function ScheduleBoard() {
   const pondStore = usePondStore();
   const scheduleStore = useScheduleStore();
+  const navigate = useNavigate();
 
   const [dialogOpen, setDialogOpen] = createSignal(false);
   const [editingId, setEditingId] = createSignal<string | null>(null);
@@ -91,6 +93,9 @@ export default function ScheduleBoard() {
       pending: list.filter((row) => row.state === '待排').length,
       running: list.filter((row) => row.state === '走水中').length,
       done: list.filter((row) => row.state === '已出卤').length,
+      moved: list.filter((row) => row.cleaningOrderId !== undefined && row.queued !== true && row.originPondId !== undefined && row.originPondId !== row.pondId).length,
+      queued: list.filter((row) => row.queued === true).length,
+      shortTotal: Math.round(list.reduce((acc, row) => acc + (row.queued === true ? row.shortM3 ?? 0 : 0), 0) * 10) / 10,
       volume: Math.round(list.reduce((acc, row) => acc + row.volumeM3, 0) * 10) / 10,
       donePct: list.length === 0 ? 0 : Math.round((list.filter((row) => row.state === '已出卤').length / list.length) * 1000) / 10,
     };
@@ -120,6 +125,10 @@ export default function ScheduleBoard() {
   const submit = async (): Promise<void> => {
     if (draft.pondId === '') {
       scheduleStore.setMessage('请选择蒸发池');
+      return;
+    }
+    if (pondStore.activeCleaningOrder(draft.pondId) !== undefined) {
+      scheduleStore.setMessage('该池正在清池中，退场前不安排新的走水编排');
       return;
     }
     if (editingId() === null) {
@@ -162,6 +171,9 @@ export default function ScheduleBoard() {
         <StatBadge label="已出卤" value={stats().done} suffix="条" tone="success" />
         <StatBadge label="计划总量" value={stats().volume} suffix="m³" tone="info" />
         <StatBadge label="出卤完成率" value={`${stats().donePct}%`} percent={stats().donePct} tone="success" />
+        <StatBadge label="清池挪走" value={stats().moved} suffix="条" tone="info" hint="因清池被挪到同池系其他在用池的走水编排" />
+        <StatBadge label="排队待排" value={stats().queued} suffix="条" tone="warning" />
+        <StatBadge label="排队缺口" value={stats().shortTotal} suffix="m³" tone="danger" hint="各受纳池合计仍缺的受纳容量" />
       </div>
 
       <Show when={scheduleStore.state.lastMessage !== ''}>
@@ -173,9 +185,14 @@ export default function ScheduleBoard() {
       <section class="rounded-xl border border-slate-200 bg-white p-4">
         <header class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-[15px] font-semibold text-slate-800">走水与出卤编排</h2>
-          <button type="button" class={BTN_PRIMARY} onClick={openCreate} disabled={pondStore.state.ponds.length === 0}>
-            + 新建走水计划
-          </button>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" class={BTN_GHOST} onClick={() => navigate('/cleaning')}>
+              清池班 / 对账
+            </button>
+            <button type="button" class={BTN_PRIMARY} onClick={openCreate} disabled={pondStore.state.ponds.length === 0}>
+              + 新建走水计划
+            </button>
+          </div>
         </header>
 
         <FilterBar
@@ -233,10 +250,37 @@ export default function ScheduleBoard() {
                     ⠿
                   </span>
                   <div class="min-w-[180px] flex-1">
-                    <p class="text-sm font-medium text-slate-800">{pondLabel(row.pondId)}</p>
+                    <p class="text-sm font-medium text-slate-800">
+                      {pondLabel(row.pondId)}
+                      <Show when={row.queued === true}>
+                        <span class="ml-1 rounded border border-rose-300 bg-rose-50 px-1.5 py-px text-[10px] font-normal text-rose-700">
+                          排队待排
+                        </span>
+                      </Show>
+                      <Show when={row.cleaningOrderId !== undefined && row.queued !== true && row.originPondId !== undefined && row.originPondId !== row.pondId}>
+                        <span class="ml-1 rounded border border-sky-300 bg-sky-50 px-1.5 py-px text-[10px] font-normal text-sky-700">
+                          清池挪入
+                        </span>
+                      </Show>
+                    </p>
                     <p class="text-xs text-slate-500">
                       计划日期 {row.planDate} · 调度员 {row.operator === '' ? '未填写' : row.operator}
                     </p>
+                    <Show
+                      when={
+                        row.cleaningOrderId !== undefined &&
+                        row.queued !== true &&
+                        row.originPondId !== undefined &&
+                        row.originPondId !== row.pondId
+                      }
+                    >
+                      <p class="text-[11px] text-slate-400">由 {pondLabel(row.originPondId ?? '')} 清池挪来</p>
+                    </Show>
+                    <Show when={row.queued === true}>
+                      <p class="text-[11px] font-medium text-rose-600">
+                        同池系受纳容量不足，缺 {row.shortM3 ?? 0} m³；原池 {pondLabel(row.originPondId ?? row.pondId)} 清完退场后回排
+                      </p>
+                    </Show>
                   </div>
                   <div class="flex items-center gap-2">
                     <StageTag stage={pondOf(row.pondId)?.stage ?? null} size="sm" />
@@ -272,13 +316,14 @@ export default function ScheduleBoard() {
                   <div class="flex flex-wrap items-center gap-2">
                     <button
                       class="rounded-md border border-brine-300 bg-brine-50 px-2.5 py-1 text-xs text-brine-700 transition hover:bg-brine-100 disabled:opacity-50"
-                      disabled={row.state === '已出卤'}
+                      disabled={row.state === '已出卤' || row.queued === true}
+                      title={row.queued === true ? '排队待排：受纳容量不足，等清池退场或空出容量后由「按池重排」安排' : ''}
                       onClick={async () => {
                         const next = await scheduleStore.advance(row.id);
                         if (next === null) scheduleStore.setMessage('该计划已处于「已出卤」状态');
                       }}
                     >
-                      {nextStateLabel(row.state)}
+                      {row.queued === true ? '排队待排' : nextStateLabel(row.state)}
                     </button>
                     <button class="text-xs text-brine-700 hover:underline" onClick={() => openEdit(row)}>
                       编辑
@@ -324,11 +369,15 @@ export default function ScheduleBoard() {
             <select class={INPUT} value={draft.pondId} onChange={(event) => setDraft('pondId', event.currentTarget.value)}>
               <option value="">请选择</option>
               <For each={pondStore.state.ponds}>
-                {(pond) => (
-                  <option value={pond.id}>
-                    {pond.code} · {pond.seriesName} · {pond.stage}
-                  </option>
-                )}
+                {(pond) => {
+                  const cleaning = pondStore.activeCleaningOrder(pond.id);
+                  return (
+                    <option value={pond.id} disabled={cleaning !== undefined && pond.id !== draft.pondId}>
+                      {pond.code} · {pond.seriesName} · {pond.stage}
+                      {cleaning !== undefined ? '（清池中，暂不接走水）' : ''}
+                    </option>
+                  );
+                }}
               </For>
             </select>
           </label>

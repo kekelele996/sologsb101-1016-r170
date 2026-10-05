@@ -9,7 +9,9 @@ import type { Gate } from '../types/gate';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
 import type { Schedule } from '../types/schedule';
+import type { CleaningOrder } from '../types/cleaning';
 import { autoVerdict, estimateEvapMm } from './brine';
+import { reallocateForOrder } from './cleaningPlanner';
 
 const SEED_TIME = '2026-09-01T00:30:00.000Z';
 
@@ -20,6 +22,7 @@ export const SEED_IDS = {
   pondC: 'pond-north-03',
   pondD: 'pond-south-04',
   pondE: 'pond-south-05',
+  pondF: 'pond-south-06',
 } as const;
 
 function wrap<T>(row: Omit<T, 'createdAt' | 'updatedAt' | 'revision'>): T {
@@ -78,13 +81,14 @@ export async function seedDatabase(): Promise<void> {
   const exists = await db.ponds.count();
   if (exists > 0) return;
 
-  // ---------------- 蒸发池（5 口，跨 2 个池系、3 个阶段） ----------------
+  // ---------------- 蒸发池（6 口，跨 2 个池系、3 个阶段） ----------------
   const ponds: Pond[] = [
     wrap<Pond>({ id: SEED_IDS.pondA, code: '北-01', seriesName: '北部一系', areaM2: 12000, depthCm: 45, stage: '钠盐', status: '在用' }),
     wrap<Pond>({ id: SEED_IDS.pondB, code: '北-02', seriesName: '北部一系', areaM2: 9000, depthCm: 40, stage: '钾盐', status: '在用' }),
     wrap<Pond>({ id: SEED_IDS.pondC, code: '北-03', seriesName: '北部一系', areaM2: 6800, depthCm: 35, stage: '锂盐', status: '在用' }),
     wrap<Pond>({ id: SEED_IDS.pondD, code: '南-04', seriesName: '南部二系', areaM2: 15000, depthCm: 50, stage: '钠盐', status: '在用' }),
     wrap<Pond>({ id: SEED_IDS.pondE, code: '南-05', seriesName: '南部二系', areaM2: 7200, depthCm: 38, stage: '钾盐', status: '清池中' }),
+    wrap<Pond>({ id: SEED_IDS.pondF, code: '南-06', seriesName: '南部二系', areaM2: 11000, depthCm: 48, stage: '钾盐', status: '在用' }),
   ];
 
   // ---------------- 闸门串级（上游 → 下游，形成完整走向链） ----------------
@@ -112,7 +116,9 @@ export async function seedDatabase(): Promise<void> {
     observation('obs-d3', SEED_IDS.pondD, '2026-09-12', 1.074, 29, 46, 2),
     observation('obs-d4', SEED_IDS.pondD, '2026-09-24', 1.092, 27, 44, 3),
     observation('obs-e1', SEED_IDS.pondE, '2026-08-24', 1.12, 28, 38, 2),
-    observation('obs-e2', SEED_IDS.pondE, '2026-09-04', 1.146, 29, 36, 2),
+    observation('obs-e2', SEED_IDS.pondE, '2026-09-04', 1.146, 29, 12, 2),
+    observation('obs-f1', SEED_IDS.pondF, '2026-08-26', 1.118, 28, 42, 2),
+    observation('obs-f2', SEED_IDS.pondF, '2026-09-08', 1.142, 29, 40, 3),
   ];
 
   // ---------------- 离子组分分析（含达标 / 接近 / 未达标三种判定） ----------------
@@ -126,22 +132,58 @@ export async function seedDatabase(): Promise<void> {
       verdict: '接近',
       verdictManual: true,
     }),
+    assay('assay-f1', SEED_IDS.pondF, '2026-09-08', 0.66, 14.2, 22.6, 60.1, '南部化验站'),
   ];
 
   // ---------------- 走水编排（覆盖四种状态，orderIndex 决定先后） ----------------
+  // 南-05 正在清池：其窗口内两条未走水计划由清池联动逻辑挪/排（见下方 reallocateForOrder），
+  // 这里先按原池挂着，保证挪入、排队两种结果都可复现。
   const schedules: Schedule[] = [
     wrap<Schedule>({ id: 'schedule-a1', pondId: SEED_IDS.pondA, planDate: '2026-10-02', targetDensity: 1.115, volumeM3: 1200, operator: '韩江', state: '已排', orderIndex: 1 }),
     wrap<Schedule>({ id: 'schedule-d1', pondId: SEED_IDS.pondD, planDate: '2026-10-04', targetDensity: 1.098, volumeM3: 1600, operator: '王锐', state: '已排', orderIndex: 2 }),
     wrap<Schedule>({ id: 'schedule-b1', pondId: SEED_IDS.pondB, planDate: '2026-10-06', targetDensity: 1.175, volumeM3: 900, operator: '韩江', state: '走水中', orderIndex: 3 }),
     wrap<Schedule>({ id: 'schedule-c1', pondId: SEED_IDS.pondC, planDate: '2026-10-12', targetDensity: 1.255, volumeM3: 600, operator: '李文', state: '待排', orderIndex: 4 }),
     wrap<Schedule>({ id: 'schedule-e1', pondId: SEED_IDS.pondE, planDate: '2026-09-28', targetDensity: 1.15, volumeM3: 700, operator: '王锐', state: '已出卤', orderIndex: 5 }),
+    wrap<Schedule>({ id: 'schedule-e2', pondId: SEED_IDS.pondE, planDate: '2026-10-08', targetDensity: 1.172, volumeM3: 800, operator: '王锐', state: '已排', orderIndex: 6 }),
+    wrap<Schedule>({ id: 'schedule-e3', pondId: SEED_IDS.pondE, planDate: '2026-10-15', targetDensity: 1.178, volumeM3: 500, operator: '王锐', state: '待排', orderIndex: 7 }),
   ];
 
-  await db.transaction('rw', db.ponds, db.gates, db.observations, db.assays, db.schedules, async () => {
-    await db.ponds.bulkPut(ponds);
-    await db.gates.bulkPut(gates);
-    await db.observations.bulkPut(observations);
-    await db.assays.bulkPut(assays);
-    await db.schedules.bulkPut(schedules);
+  // ---------------- 清池单（清池班在南-05 上开单，进场未退场 = 清池中） ----------------
+  const cleaningOrderE: CleaningOrder = wrap<CleaningOrder>({
+    id: 'cleaning-e-20261005',
+    pondId: SEED_IDS.pondE,
+    enterDate: '2026-10-05',
+    exitDate: '2026-10-18',
+    remainDepthCm: 8,
+    crew: '马洪涛',
+    state: '清池中',
+    backfilled: false,
+    note: '清淤检修，退场前该池不进水',
   });
+
+  // 走水的水编排不能手工挪：用与线上一致的纯函数重排，保证挪入受纳池 / 容量不够排队 / 缺口方数
+  const reallocation = reallocateForOrder({
+    order: cleaningOrderE,
+    ponds,
+    schedules,
+    observations,
+    otherActiveOrders: [],
+  });
+  reallocation.updates.forEach((next) => {
+    const idx = schedules.findIndex((row) => row.id === next.id);
+    if (idx >= 0) schedules[idx] = next;
+  });
+
+  await db.transaction(
+    'rw',
+    [db.ponds, db.gates, db.observations, db.assays, db.schedules, db.cleaningOrders],
+    async () => {
+      await db.ponds.bulkPut(ponds);
+      await db.gates.bulkPut(gates);
+      await db.observations.bulkPut(observations);
+      await db.assays.bulkPut(assays);
+      await db.schedules.bulkPut(schedules);
+      await db.cleaningOrders.bulkPut([cleaningOrderE]);
+    },
+  );
 }

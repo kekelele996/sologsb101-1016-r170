@@ -10,6 +10,7 @@ import GateConfig from '../pages/GateConfig';
 import ObservationEntry from '../pages/ObservationEntry';
 import AssayEntry from '../pages/AssayEntry';
 import ScheduleBoard from '../pages/ScheduleBoard';
+import CleaningBoard from '../pages/CleaningBoard';
 import ExportView from '../pages/ExportView';
 
 /** 路由路径常量：全项目唯一来源，避免手写字符串不一致 */
@@ -19,6 +20,7 @@ export const ROUTES = {
   observations: '/observations',
   assays: '/assays',
   schedules: '/schedules',
+  cleaning: '/cleaning',
   export: '/export',
 } as const;
 
@@ -29,6 +31,7 @@ export const NAV_ITEMS = [
   { path: ROUTES.observations, label: '卤水日观测', hint: '密度 · 温度 · 蒸发量' },
   { path: ROUTES.assays, label: '离子组分', hint: '达标判定 · 组分曲线' },
   { path: ROUTES.schedules, label: '走水编排', hint: '拖拽排序 · 出卤推进' },
+  { path: ROUTES.cleaning, label: '清池班', hint: '清池单 · 挪池排队 · 对账' },
   { path: ROUTES.export, label: '晒程汇总', hint: '进度 · JSON 导入导出' },
 ] as const;
 
@@ -41,6 +44,7 @@ export function AppRouter() {
       <Route path={ROUTES.observations} component={ObservationEntry} />
       <Route path={ROUTES.assays} component={AssayEntry} />
       <Route path={ROUTES.schedules} component={ScheduleBoard} />
+      <Route path={ROUTES.cleaning} component={CleaningBoard} />
       <Route path={ROUTES.export} component={ExportView} />
       <Route path="*" component={() => <Navigate href={ROUTES.ponds} />} />
     </Router>

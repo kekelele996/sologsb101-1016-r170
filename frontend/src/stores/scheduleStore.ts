@@ -14,6 +14,7 @@ import {
   putSchedule,
   removeSchedule,
   reorderSchedules,
+  ROW_REVISION,
 } from '../utils/db';
 import { nowIso, uuid } from '../utils/id';
 import { usePondStore } from './pondStore';
@@ -86,7 +87,7 @@ function createScheduleStore() {
       orderIndex: draft.orderIndex,
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: ROW_REVISION,
     };
     await putSchedule(row);
     setState('lastMessage', `已新建走水计划：${row.planDate}`);

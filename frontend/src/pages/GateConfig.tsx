@@ -13,7 +13,7 @@ import StageTag from '../components/common/StageTag';
 import { usePondStore } from '../stores/pondStore';
 import { GATE_STATE_OPTIONS, type Gate, type GateDraft, type GateState } from '../types/gate';
 import { estimateInflowM3, gateFlowAreaM2, stateFromOpening } from '../utils/brine';
-import { putGate, removeGate, updateGateOpening } from '../utils/db';
+import { putGate, removeGate, updateGateOpening, ROW_REVISION } from '../utils/db';
 import { nowIso, uuid } from '../utils/id';
 
 const INPUT =
@@ -114,7 +114,7 @@ export default function GateConfig() {
         ...payload,
         createdAt: stamp,
         updatedAt: stamp,
-        revision: 2,
+        revision: ROW_REVISION,
       });
       setMessage(`已新建闸门：${pondLabel(payload.fromPondId)} → ${pondLabel(payload.toPondId)}`);
     } else {
