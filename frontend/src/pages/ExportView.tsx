@@ -29,6 +29,7 @@ export default function ExportView() {
     const observations = store.state.observations;
     const assays = store.state.assays;
     const schedules = store.state.schedules;
+    const cleaningOrders = store.state.cleaningOrders;
     const passCount = assays.filter((row) => effectiveVerdict(row) === '达标').length;
     const done = schedules.filter((row) => row.state === '已出卤').length;
     const readyPonds = new Set(assays.filter((row) => effectiveVerdict(row) === '达标').map((row) => row.pondId)).size;
@@ -38,6 +39,10 @@ export default function ExportView() {
       assays: assays.length,
       gates: store.state.gates.length,
       schedules: schedules.length,
+      cleaningOrders: cleaningOrders.length,
+      cleaningActive: cleaningOrders.filter((row) => row.state === '清池中').length,
+      queued: schedules.filter((row) => row.disposition === '排队待容').length,
+      relocated: schedules.filter((row) => row.disposition === '已挪池').length,
       passCount,
       passPct: assays.length === 0 ? 0 : Math.round((passCount / assays.length) * 1000) / 10,
       donePct: schedules.length === 0 ? 0 : Math.round((done / schedules.length) * 1000) / 10,
@@ -57,6 +62,7 @@ export default function ExportView() {
       store.state.observations,
       store.state.assays,
       store.state.schedules,
+      store.state.cleaningOrders,
     );
     setMessage(`已导出晒程进度汇总 ${filename}`);
   };
@@ -67,6 +73,7 @@ export default function ExportView() {
       store.state.observations,
       store.state.assays,
       store.state.schedules,
+      store.state.cleaningOrders,
     );
     const ok = await copyText(text);
     setMessage(ok ? '晒程调度通报已复制到剪贴板' : '当前浏览器不支持剪贴板写入，请手动复制');
@@ -107,13 +114,26 @@ export default function ExportView() {
           hint="区间内判定为「达标」的化验记录占比"
         />
         <StatBadge label="出卤候选池" value={summary().readyPonds} suffix="口" tone="success" />
+        <StatBadge
+          label="清池中"
+          value={summary().cleaningActive}
+          suffix={`口 / 单 ${summary().cleaningOrders} 张`}
+          tone="danger"
+        />
+        <StatBadge
+          label="挪水 / 排队"
+          value={`${summary().relocated} / ${summary().queued}`}
+          suffix="条"
+          tone="warning"
+          hint="清池联动：成功挪到同池系在用池的条数 / 受纳不下排队待容的条数"
+        />
         <StatBadge label="出卤完成率" value={`${summary().donePct}%`} percent={summary().donePct} tone="primary" />
         <StatBadge
           label="数据结构版本"
           value={`v${DB_SCHEMA_VERSION}`}
           suffix={`· ${DB_NAME}`}
           tone="default"
-          hint="IndexedDB 库名与结构版本；v1 建表与 pondId+date 复合索引，v2 新增 evapMm 并迁移旧记录"
+          hint="IndexedDB 库名与结构版本；v1 建表与 pondId+date 复合索引，v2 新增 evapMm，v3 接入清池班（清池单 + 挪水排队留底），旧库按池当时状态回填清池单"
         />
       </div>
 
@@ -231,7 +251,7 @@ export default function ExportView() {
           <div class="w-full max-w-lg rounded-xl bg-white shadow-2xl">
             <div class="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-800">确认重置本地数据？</div>
             <div class="px-4 py-4 text-sm leading-relaxed text-slate-600">
-              全部蒸发池、闸门串级、卤水日观测、离子组分分析与走水编排都会被清空，并重新灌入演示数据。
+              全部蒸发池、闸门串级、卤水日观测、离子组分分析、清池单与走水编排都会被清空，并重新灌入演示数据。
             </div>
             <div class="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
               <button class={BTN_GHOST} onClick={() => setResetOpen(false)}>

@@ -113,6 +113,13 @@ export default function PondList() {
           tone={readyPonds() > 0 ? 'success' : 'default'}
           hint="最近一次离子组分分析判定为「达标」的池"
         />
+        <StatBadge
+          label="清池中"
+          value={store.state.ponds.filter((pond) => pond.status === '清池中').length}
+          suffix="口"
+          tone="danger"
+          hint="清池班开了未退场清池单的池，走水编排已退回待排 / 挪水 / 排队"
+        />
         <StatBadge label="闸门串级" value={store.state.gates.length} suffix="条" tone="default" size="sm" />
       </div>
 
@@ -224,6 +231,12 @@ export default function PondList() {
                       <span class="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-500">
                         走水计划 {stat().scheduleCount} 条
                       </span>
+                      <Show when={stat().activeCleaning !== null}>
+                        <span class="rounded border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-700">
+                          清池中 · {stat().activeCleaning?.entryDate} 进场
+                          {stat().activeCleaning?.residualDepthCm ? ` · 清完剩 ${stat().activeCleaning?.residualDepthCm} cm` : ''}
+                        </span>
+                      </Show>
                     </div>
                     <div class="flex flex-wrap gap-2 pt-1">
                       <button class="text-xs text-brine-700 hover:underline" onClick={() => openEdit(pond)}>

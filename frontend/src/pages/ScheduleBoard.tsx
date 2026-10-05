@@ -31,6 +31,12 @@ const STATE_STYLE: Record<ScheduleState, string> = {
   已出卤: 'border-emerald-300 bg-emerald-50 text-emerald-700',
 };
 
+const DISPOSITION_STYLE: Record<Schedule['disposition'], string> = {
+  本池: 'border-slate-300 bg-white text-slate-500',
+  已挪池: 'border-sky-300 bg-sky-50 text-sky-700',
+  排队待容: 'border-rose-300 bg-rose-50 text-rose-700',
+};
+
 function emptyDraft(pondId: string, orderIndex: number): ScheduleDraft {
   return {
     pondId,
@@ -93,6 +99,10 @@ export default function ScheduleBoard() {
       done: list.filter((row) => row.state === '已出卤').length,
       volume: Math.round(list.reduce((acc, row) => acc + row.volumeM3, 0) * 10) / 10,
       donePct: list.length === 0 ? 0 : Math.round((list.filter((row) => row.state === '已出卤').length / list.length) * 1000) / 10,
+      relocated: list.filter((row) => row.disposition === '已挪池').length,
+      queued: list.filter((row) => row.disposition === '排队待容').length,
+      shortfall: Math.round(list.reduce((acc, row) => acc + row.shortfallM3, 0) * 10) / 10,
+      cleaningPonds: pondStore.state.ponds.filter((pond) => pond.status === '清池中').length,
     };
   });
 
@@ -162,6 +172,21 @@ export default function ScheduleBoard() {
         <StatBadge label="已出卤" value={stats().done} suffix="条" tone="success" />
         <StatBadge label="计划总量" value={stats().volume} suffix="m³" tone="info" />
         <StatBadge label="出卤完成率" value={`${stats().donePct}%`} percent={stats().donePct} tone="success" />
+        <StatBadge
+          label="清池中池"
+          value={stats().cleaningPonds}
+          suffix="口"
+          tone="danger"
+          hint="清池班开了未退场清池单的池；挂这些池的未走水编排已退回待排并挪水 / 排队"
+        />
+        <StatBadge label="已挪水" value={stats().relocated} suffix="条" tone="info" hint="原池清池，已挪到同池系别的在用池" />
+        <StatBadge
+          label="排队待容"
+          value={stats().queued}
+          suffix={`条 · 缺 ${stats().shortfall} m³`}
+          tone="danger"
+          hint="同池系在用池受纳不下，按受纳容量排队，数字为缺方合计"
+        />
       </div>
 
       <Show when={scheduleStore.state.lastMessage !== ''}>
@@ -237,6 +262,11 @@ export default function ScheduleBoard() {
                     <p class="text-xs text-slate-500">
                       计划日期 {row.planDate} · 调度员 {row.operator === '' ? '未填写' : row.operator}
                     </p>
+                    <Show when={row.disposition === '已挪池' || row.disposition === '排队待容'}>
+                      <p class="mt-0.5 text-[11px] text-slate-400">
+                        原挂池：{pondLabel(row.homePondId || row.pondId)}（清池中，调度室留底）
+                      </p>
+                    </Show>
                   </div>
                   <div class="flex items-center gap-2">
                     <StageTag stage={pondOf(row.pondId)?.stage ?? null} size="sm" />
@@ -269,16 +299,32 @@ export default function ScheduleBoard() {
                     </p>
                   </div>
                   <span class={`rounded border px-2 py-0.5 text-[11px] ${STATE_STYLE[row.state]}`}>{row.state}</span>
+                  <Show
+                    when={row.disposition !== '本池'}
+                    fallback={
+                      <Show when={pondStore.activeOrderOf(row.pondId) !== null && row.state !== '走水中' && row.state !== '已出卤'}>
+                        <span class="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">
+                          清池中待对账
+                        </span>
+                      </Show>
+                    }
+                  >
+                    <span class={`rounded border px-2 py-0.5 text-[11px] ${DISPOSITION_STYLE[row.disposition]}`}>
+                      {row.disposition === '已挪池' ? `清池挪入 → ${pondOf(row.pondId)?.code ?? ''}` : `排队待容 · 缺 ${row.shortfallM3} m³`}
+                    </span>
+                  </Show>
                   <div class="flex flex-wrap items-center gap-2">
                     <button
                       class="rounded-md border border-brine-300 bg-brine-50 px-2.5 py-1 text-xs text-brine-700 transition hover:bg-brine-100 disabled:opacity-50"
-                      disabled={row.state === '已出卤'}
+                      disabled={row.state === '已出卤' || row.disposition === '排队待容'}
+                      title={row.disposition === '排队待容' ? '同池系在用池受纳不下，待腾出容量后才能安排' : ''}
                       onClick={async () => {
+                        if (row.disposition === '排队待容') return;
                         const next = await scheduleStore.advance(row.id);
                         if (next === null) scheduleStore.setMessage('该计划已处于「已出卤」状态');
                       }}
                     >
-                      {nextStateLabel(row.state)}
+                      {row.disposition === '排队待容' ? '排队中' : nextStateLabel(row.state)}
                     </button>
                     <button class="text-xs text-brine-700 hover:underline" onClick={() => openEdit(row)}>
                       编辑
@@ -327,10 +373,16 @@ export default function ScheduleBoard() {
                 {(pond) => (
                   <option value={pond.id}>
                     {pond.code} · {pond.seriesName} · {pond.stage}
+                    {pond.status === '清池中' ? ' · 清池中' : ''}
                   </option>
                 )}
               </For>
             </select>
+            <Show when={draft.pondId !== '' && pondStore.activeOrderOf(draft.pondId) !== null}>
+              <span class="mt-1 text-[11px] text-rose-600">
+                该池有未退场清池单：保存后未走水的编排会退回待排并挪到同池系别的在用池，挪不下排队并写明缺方。
+              </span>
+            </Show>
           </label>
           <label class="flex flex-col gap-1 text-[13px] text-slate-600">
             <span>计划走水日期</span>

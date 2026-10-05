@@ -14,6 +14,7 @@ import {
   putSchedule,
   removeSchedule,
   reorderSchedules,
+  runCleaningReplan,
 } from '../utils/db';
 import { nowIso, uuid } from '../utils/id';
 import { usePondStore } from './pondStore';
@@ -78,27 +79,37 @@ function createScheduleStore() {
     const row: Schedule = {
       id: uuid('schedule'),
       pondId: draft.pondId,
+      // 新开的编排原挂池即当前池；若误挂到清池中池，随后的清池重排会退回 / 挪水 / 排队
+      homePondId: draft.pondId,
       planDate: draft.planDate,
       targetDensity: draft.targetDensity,
       volumeM3: draft.volumeM3,
       operator: draft.operator.trim(),
       state: draft.state,
       orderIndex: draft.orderIndex,
+      disposition: '本池',
+      cleaningOrderId: '',
+      shortfallM3: 0,
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: 3,
     };
     await putSchedule(row);
-    setState('lastMessage', `已新建走水计划：${row.planDate}`);
+    const result = await runCleaningReplan();
+    setState('lastMessage', `已新建走水计划：${row.planDate}${cleaningTail(result)}`);
     return row;
   }
 
   async function updateSchedule(scheduleId: string, draft: ScheduleDraft): Promise<void> {
     const existing = state.rows.find((row) => row.id === scheduleId);
     if (existing === undefined) return;
+    const wasHome = existing.homePondId === existing.pondId || existing.disposition === '本池';
     await putSchedule({
       ...existing,
       pondId: draft.pondId,
+      // 调度员在台账编辑里改派：若这条本就在原池（未被清池挪走），原挂池跟随改派；
+      // 被清池挪走的编排其 homePondId 是调度室留底，不被手工改派覆盖。
+      homePondId: wasHome ? draft.pondId : existing.homePondId,
       planDate: draft.planDate,
       targetDensity: draft.targetDensity,
       volumeM3: draft.volumeM3,
@@ -106,11 +117,14 @@ function createScheduleStore() {
       state: draft.state,
       orderIndex: draft.orderIndex,
     });
-    setState('lastMessage', '走水计划已更新');
+    const result = await runCleaningReplan();
+    setState('lastMessage', `走水计划已更新${cleaningTail(result)}`);
   }
 
   async function deleteSchedule(scheduleId: string): Promise<void> {
     await removeSchedule(scheduleId);
+    // 删掉一条排队 / 已挪走的编排后，同池系容量重新分配，按清池单重排一次
+    await runCleaningReplan();
     setState('lastMessage', '走水计划已删除');
   }
 
@@ -176,6 +190,17 @@ function createScheduleStore() {
 }
 
 const store = createRoot(createScheduleStore);
+
+function cleaningTail(result: { returnedCount: number; relocatedCount: number; queuedCount: number; totalShortfallM3: number } | null): string {
+  if (result === null) return '';
+  if (result.queuedCount > 0) {
+    return `；该池清池中：退回 ${result.returnedCount} 条、挪走 ${result.relocatedCount} 条、排队 ${result.queuedCount} 条（缺 ${result.totalShortfallM3} m³）`;
+  }
+  if (result.returnedCount > 0 || result.relocatedCount > 0) {
+    return `；该池清池中：退回 ${result.returnedCount} 条、挪走 ${result.relocatedCount} 条`;
+  }
+  return '';
+}
 
 export function useScheduleStore() {
   return store;
